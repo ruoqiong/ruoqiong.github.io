@@ -202,7 +202,7 @@
             border-radius: 8px;
             font-weight: 600;
             font-size: 0.7rem;
-            padding: 8px;
+            padding: 12px 8px;
             cursor: pointer;
         }
         .match-display { background: #dcfce7; color: #15803d; }
@@ -314,7 +314,7 @@
         <div id="graphViewContainer" style="display: none;"></div>
     </div>
     <footer>
-        💡 <strong>拖拽矩阵</strong>：拖拽班级到红区(主队)/蓝区(客队) → 自动生成比赛。单击区域清除。<br>
+        💡 <strong>拖拽矩阵</strong>：拖拽班级到红区(主队)/蓝区(客队) → 自动生成比赛。单击生成的比赛直接删除。单击待填区域可清除。<br>
         🔗 <strong>连线视图</strong>：拖拽圆圈添加连线，双循环平行线不交叉。单击连线中点选中后删除。
     </footer>
 </div>
@@ -428,18 +428,14 @@
         return Array.from({ length: count }, (_, i) => `${i+1}班`);
     }
 
-    function getCircularLayout(teamsCount, width, height) {
-        const centerX = width / 2, centerY = height / 2;
-        const radius = Math.min(width, height) * 0.35;
+    function getCircularLayout(teamsCount) {
+        const centerX = 400, centerY = 240;
+        const radius = 150;
         const nodes = [];
         for (let i = 0; i < teamsCount; i++) {
             const angle = (i / teamsCount) * Math.PI * 2;
             let x = centerX + radius * Math.cos(angle);
             let y = centerY + radius * Math.sin(angle);
-            x += (Math.random() - 0.5) * 18;
-            y += (Math.random() - 0.5) * 18;
-            x = Math.min(Math.max(x, 60), width - 60);
-            y = Math.min(Math.max(y, 60), height - 60);
             nodes.push({ id: i, name: `${i+1}班`, x, y });
         }
         return nodes;
@@ -448,14 +444,12 @@
     function initSchedule() {
         state.teams = generateTeams(state.teamCount);
         state.matches = [];
-        const w = Math.min(700, window.innerWidth - 60);
-        const h = 420;
-        state.networkNodes = getCircularLayout(state.teamCount, w, h);
+        state.networkNodes = getCircularLayout(state.teamCount);
         selectedMatchId = null;
         cellPending = {};
     }
 
-    // ---------- 矩阵拖拽视图 (全功能适配) ----------
+    // ---------- 矩阵拖拽视图 ----------
     function renderDragMatrix() {
         const container = document.getElementById('tableViewContainer');
         if (!container) return;
@@ -463,14 +457,7 @@
         const n = teams.length;
         const matchMap = {};
         teams.forEach(t => { matchMap[t] = {}; });
-        
-        // 【核心改动】：单循环模式下，将比赛信息同时写入矩阵两端
-        state.matches.forEach(m => { 
-            if (matchMap[m.teamA]) matchMap[m.teamA][m.teamB] = m.id; 
-            if (state.tournamentType === "single_round") {
-                if (matchMap[m.teamB]) matchMap[m.teamB][m.teamA] = m.id; 
-            }
-        });
+        state.matches.forEach(m => { matchMap[m.teamA][m.teamB] = m.id; });
 
         let html = `<div class="drag-tags" id="dragTagsZone">`;
         teams.forEach(team => {
@@ -492,8 +479,9 @@
                 const pending = cellPending[key] || { home: null, away: null };
                 if (matchId) {
                     const matchClass = state.tournamentType === "single_round" ? "match-display" : "match-double-display";
-                    const matchText = state.tournamentType === "single_round" ? `🏆 ${rowTeam} vs ${colTeam}` : `🏹 ${rowTeam}→${colTeam}`;
-                    html += `<td class="matrix-cell" data-match-id="${matchId}" data-row="${i}" data-col="${j}"><div class="${matchClass}">${matchText}<br><span style="font-size:0.55rem;">点击删除</span></div></td>`;
+                    const matchText = state.tournamentType === "single_round" ? `🏆 ${rowTeam}→${colTeam}` : `🏹 ${rowTeam}→${colTeam}`;
+                    // 【优化】：去除了内部的 <span style="font-size:0.55rem;">点击删除</span> 标签
+                    html += `<td class="matrix-cell" data-match-id="${matchId}" data-row="${i}" data-col="${j}"><div class="${matchClass}">${matchText}</div></td>`;
                 } else {
                     html += `<td class="matrix-cell" data-row="${i}" data-col="${j}">
                                 <div class="slot-container">
@@ -514,7 +502,6 @@
         html += `</tbody></table></div>`;
         container.innerHTML = html;
 
-        // 拖拽逻辑 (支持触屏兼容修复)
         const tags = document.querySelectorAll('.tag');
         const homeSlots = document.querySelectorAll('.home-slot');
         const awaySlots = document.querySelectorAll('.away-slot');
@@ -522,12 +509,10 @@
 
         function getClientCoords(e) {
             let clientX, clientY;
-            if (e.touches && e.touches.length > 0) {
+            if (e.touches) {
                 clientX = e.touches[0].clientX;
                 clientY = e.touches[0].clientY;
-            } else if (e.changedTouches && e.changedTouches.length > 0) {
-                clientX = e.changedTouches[0].clientX;
-                clientY = e.changedTouches[0].clientY;
+                e.preventDefault();
             } else {
                 clientX = e.clientX;
                 clientY = e.clientY;
@@ -538,7 +523,7 @@
         function onDragStart(e) {
             const target = e.target.closest('.tag');
             if (!target) return;
-            if (e.cancelable) e.preventDefault();
+            e.preventDefault();
             dragTeam = target.getAttribute('data-team');
             if (!dragTeam) return;
             dragActive = true;
@@ -557,7 +542,6 @@
 
         function onDragMove(e) {
             if (!dragActive || !dragClone) return;
-            if (e.cancelable) e.preventDefault();
             const { clientX, clientY } = getClientCoords(e);
             dragClone.style.left = clientX + 'px';
             dragClone.style.top = clientY + 'px';
@@ -656,20 +640,13 @@
         });
     }
 
-    // ---------- 连线视图 (完美适配触屏连线拖拽) ----------
+    // ---------- 连线视图 ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
         if (dist < 0.001) return { x: cx, y: cy };
         const ratio = r / dist;
         return { x: cx + dx * ratio, y: cy + dy * ratio };
-    }
-    function getPerpendicularPoint(p1, p2, offset) {
-        const dx = p2.x - p1.x, dy = p2.y - p1.y;
-        const len = Math.hypot(dx, dy);
-        if (len < 0.001) return { x: p1.x, y: p1.y };
-        const perpX = -dy / len, perpY = dx / len;
-        return { x: p1.x + perpX * offset, y: p1.y + perpY * offset };
     }
 
     function renderGraphView() {
@@ -678,15 +655,18 @@
         const containerWidth = Math.min(container.clientWidth - 20, 750);
         const width = Math.max(400, containerWidth);
         const height = Math.min(480, Math.max(300, width * 0.6));
+        
         if (!state.networkNodes.length || state.networkNodes.length !== state.teamCount) {
-            state.networkNodes = getCircularLayout(state.teamCount, width, height);
-        } else {
-            const oldW = 750, oldH = 480;
-            state.networkNodes.forEach(n => {
-                n.x = (n.x / oldW) * width;
-                n.y = (n.y / oldH) * height;
-            });
+            state.networkNodes = getCircularLayout(state.teamCount);
         }
+        
+        const projectedNodes = state.networkNodes.map(n => ({
+            id: n.id,
+            name: n.name,
+            x: (n.x / 800) * width,
+            y: (n.y / 480) * height
+        }));
+
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -701,18 +681,19 @@
         let dragStartNode = null;
         let dragCurrentX = 0, dragCurrentY = 0;
         const nodeRadius = Math.max(20, Math.min(28, width / 20));
-        const PARALLEL_OFFSET = Math.max(10, Math.min(16, width / 45));
+        const PARALLEL_OFFSET = Math.max(10, Math.min(13, width / 50)); 
         
         function getNodeColor(id) { const hue = (id * 37) % 360; return `hsl(${hue}, 70%, 62%)`; }
         function drawArrow(ctx, fx, fy, tx, ty, color) {
             const angle = Math.atan2(ty - fy, tx - fx);
-            const as = 14, ax = tx - 10 * Math.cos(angle), ay = ty - 10 * Math.sin(angle);
+            const as = 12, ax = tx - 6 * Math.cos(angle), ay = ty - 6 * Math.sin(angle);
             ctx.beginPath();
             ctx.moveTo(ax, ay);
             ctx.lineTo(ax - as * 0.65 * Math.cos(angle - Math.PI/6), ay - as * 0.65 * Math.sin(angle - Math.PI/6));
             ctx.lineTo(ax - as * 0.65 * Math.cos(angle + Math.PI/6), ay - as * 0.65 * Math.sin(angle + Math.PI/6));
             ctx.fillStyle = color; ctx.fill();
         }
+
         function getParallelLines() {
             const pairMap = new Map();
             state.matches.forEach(m => {
@@ -726,100 +707,120 @@
                 else if (matches.length === 2) {
                     lines.push({ match: matches[0], offset: PARALLEL_OFFSET });
                     lines.push({ match: matches[1], offset: -PARALLEL_OFFSET });
-                } else matches.forEach((m, idx) => lines.push({ match: m, offset: (idx - 0.5) * PARALLEL_OFFSET }));
+                } else matches.forEach((m, idx) => lines.push({ match: m, offset: (idx - (matches.length-1)/2) * PARALLEL_OFFSET }));
             }
             return lines;
         }
+
         function drawNetwork() {
             ctx.clearRect(0,0,width,height);
             ctx.fillStyle = "#fcfdfd"; ctx.fillRect(0,0,width,height);
             const lines = getParallelLines();
+            
             lines.forEach(({ match, offset }) => {
-                const from = state.networkNodes.find(n => n.name === match.teamA);
-                const to = state.networkNodes.find(n => n.name === match.teamB);
+                const from = projectedNodes.find(n => n.name === match.teamA);
+                const to = projectedNodes.find(n => n.name === match.teamB);
                 if (!from || !to) return;
-                const se = getEdgePoint(from.x, from.y, to.x, to.y, nodeRadius);
-                const ee = getEdgePoint(to.x, to.y, from.x, from.y, nodeRadius);
-                let sp = se, ep = ee;
-                if (offset !== 0) { sp = getPerpendicularPoint(se, ee, offset); ep = getPerpendicularPoint(ee, se, offset); }
+
+                const nodeA = from.name < to.name ? from : to;
+                const nodeB = from.name < to.name ? to : from;
+
+                const se_base = getEdgePoint(nodeA.x, nodeA.y, nodeB.x, nodeB.y, nodeRadius);
+                const ee_base = getEdgePoint(nodeB.x, nodeB.y, nodeA.x, nodeA.y, nodeRadius);
+                
+                let sp = { ...se_base }, ep = { ...ee_base };
+                if (offset !== 0) { 
+                    const dx = ee_base.x - se_base.x, dy = ee_base.y - se_base.y;
+                    const len = Math.hypot(dx, dy);
+                    if (len > 0.001) {
+                        const perpX = -dy / len, perpY = dx / len;
+                        sp.x += perpX * offset; sp.y += perpY * offset;
+                        ep.x += perpX * offset; ep.y += perpY * offset;
+                    }
+                }
+
+                const drawStart = (from === nodeA) ? sp : ep;
+                const drawEnd = (from === nodeA) ? ep : sp;
+
                 ctx.beginPath();
-                ctx.moveTo(sp.x, sp.y); ctx.lineTo(ep.x, ep.y);
+                ctx.moveTo(drawStart.x, drawStart.y); ctx.lineTo(drawEnd.x, drawEnd.y);
                 if (selectedMatchId === match.id) { ctx.strokeStyle = "#f97316"; ctx.lineWidth = 5; ctx.shadowBlur = 6; }
                 else { ctx.strokeStyle = getNodeColor(from.id); ctx.lineWidth = 3; ctx.shadowBlur = 0; }
                 ctx.stroke(); ctx.shadowBlur = 0;
+
                 if (state.tournamentType === "double_round") {
-                    const angle = Math.atan2(ep.y - sp.y, ep.x - sp.x);
-                    drawArrow(ctx, ep.x - 8*Math.cos(angle), ep.y - 8*Math.sin(angle), ep.x, ep.y, getNodeColor(from.id));
+                    const angle = Math.atan2(drawEnd.y - drawStart.y, drawEnd.x - drawStart.x);
+                    drawArrow(ctx, drawEnd.x - 6*Math.cos(angle), drawEnd.y - 6*Math.sin(angle), drawEnd.x, drawEnd.y, getNodeColor(from.id));
                 }
-                const mx = (sp.x+ep.x)/2, my = (sp.y+ep.y)/2;
+                const mx = (drawStart.x+drawEnd.x)/2, my = (drawStart.y+drawEnd.y)/2;
                 ctx.beginPath(); ctx.arc(mx, my, 6, 0, 2*Math.PI);
                 ctx.fillStyle = selectedMatchId === match.id ? "#f97316cc" : "#ffffffcc"; ctx.fill();
                 ctx.strokeStyle = selectedMatchId === match.id ? "#f97316" : getNodeColor(from.id); ctx.lineWidth = 1.5; ctx.stroke();
             });
-            state.networkNodes.forEach(node => {
+
+            projectedNodes.forEach(node => {
                 ctx.beginPath(); ctx.arc(node.x, node.y, nodeRadius, 0, 2*Math.PI);
                 ctx.fillStyle = getNodeColor(node.id); ctx.fill();
                 ctx.strokeStyle = "#2c3e66"; ctx.lineWidth = 2; ctx.stroke();
                 ctx.fillStyle = "#1e293b"; ctx.font = `bold ${Math.max(10, nodeRadius/2)}px "Segoe UI"`;
-                ctx.fillText(node.name, node.x-15, node.y-8);
+                ctx.fillText(node.name, node.x-15, node.y+5);
             });
+
             if (isDragging && dragStartNode) {
                 const se = getEdgePoint(dragStartNode.x, dragStartNode.y, dragCurrentX, dragCurrentY, nodeRadius);
                 ctx.beginPath(); ctx.moveTo(se.x, se.y); ctx.lineTo(dragCurrentX, dragCurrentY);
                 ctx.strokeStyle = getNodeColor(dragStartNode.id); ctx.lineWidth = 3; ctx.setLineDash([6,6]); ctx.stroke(); ctx.setLineDash([]);
             }
         }
-        
-        // 【核心修复】：增强对 touchstart/touchmove/touchend 事件的多端环境兼容
+
         function getMousePos(e) {
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
             let clientX, clientY;
-            
-            if (e.touches && e.touches.length > 0) { 
-                clientX = e.touches[0].clientX; 
-                clientY = e.touches[0].clientY; 
-            } else if (e.changedTouches && e.changedTouches.length > 0) {
-                // 重点：修复手机松开手指（touchend）阶段没有坐标数据的Bug
-                clientX = e.changedTouches[0].clientX; 
-                clientY = e.changedTouches[0].clientY;
-            } else { 
-                clientX = e.clientX; 
-                clientY = e.clientY; 
-            }
+            if (e.touches) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; e.preventDefault(); }
+            else { clientX = e.clientX; clientY = e.clientY; }
             let x = (clientX - rect.left) * scaleX, y = (clientY - rect.top) * scaleY;
             return { x: Math.min(Math.max(x, 10), width-10), y: Math.min(Math.max(y, 10), height-10) };
         }
-        function findNode(x,y) { for(let n of state.networkNodes) if(Math.hypot(n.x-x,n.y-y)<nodeRadius) return n; return null; }
+        function findNode(x,y) { for(let n of projectedNodes) if(Math.hypot(n.x-x,n.y-y)<nodeRadius) return n; return null; }
+        
         function findMatchNear(x,y) {
             const lines = getParallelLines();
             for(let {match,offset} of lines){
-                const from = state.networkNodes.find(n=>n.name===match.teamA), to = state.networkNodes.find(n=>n.name===match.teamB);
+                const from = projectedNodes.find(n=>n.name===match.teamA), to = projectedNodes.find(n=>n.name===match.teamB);
                 if(!from||!to) continue;
-                const se = getEdgePoint(from.x,from.y,to.x,to.y,nodeRadius), ee = getEdgePoint(to.x,to.y,from.x,from.y,nodeRadius);
-                let sp=se, ep=ee;
-                if(offset!==0){ sp=getPerpendicularPoint(se,ee,offset); ep=getPerpendicularPoint(ee,se,offset); }
+
+                const nodeA = from.name < to.name ? from : to;
+                const nodeB = from.name < to.name ? to : from;
+
+                const se_base = getEdgePoint(nodeA.x, nodeA.y, nodeB.x, nodeB.y, nodeRadius);
+                const ee_base = getEdgePoint(nodeB.x, nodeB.y, nodeA.x, nodeA.y, nodeRadius);
+                let sp = { ...se_base }, ep = { ...ee_base };
+                if(offset!==0){
+                    const dx = ee_base.x - se_base.x, dy = ee_base.y - se_base.y;
+                    const len = Math.hypot(dx, dy);
+                    if (len > 0.001) {
+                        const perpX = -dy / len, perpY = dx / len;
+                        sp.x += perpX * offset; sp.y += perpY * offset;
+                        ep.x += perpX * offset; ep.y += perpY * offset;
+                    }
+                }
                 const mx=(sp.x+ep.x)/2, my=(sp.y+ep.y)/2;
                 if(Math.hypot(x-mx,y-my)<18) return match;
             }
             return null;
         }
+
         function onDown(e) {
             const {x,y}=getMousePos(e);
             const m=findMatchNear(x,y);
-            if(m){ selectedMatchId=m.id; drawNetwork(); if (e.cancelable) e.preventDefault(); return; }
+            if(m){ selectedMatchId=m.id; drawNetwork(); e.preventDefault(); return; }
             if(selectedMatchId){ selectedMatchId=null; drawNetwork(); }
             const n=findNode(x,y);
-            if(n){ isDragging=true; dragStartNode=n; dragCurrentX=x; dragCurrentY=y; drawNetwork(); if (e.cancelable) e.preventDefault(); }
+            if(n){ isDragging=true; dragStartNode=n; dragCurrentX=x; dragCurrentY=y; drawNetwork(); e.preventDefault(); }
         }
-        function onMove(e){ 
-            if(!isDragging) return; 
-            if (e.cancelable) e.preventDefault(); // 阻止手机滑动页面干扰连线拖拽
-            const {x,y}=getMousePos(e); 
-            dragCurrentX=x; dragCurrentY=y; 
-            drawNetwork(); 
-        }
+        function onMove(e){ if(!isDragging) return; const {x,y}=getMousePos(e); dragCurrentX=x; dragCurrentY=y; drawNetwork(); }
         function onUp(e){
             if(!isDragging){ drawNetwork(); return; }
             const {x,y}=getMousePos(e);
@@ -833,10 +834,9 @@
             isDragging=false; dragStartNode=null; drawNetwork();
         }
         canvas.addEventListener('mousedown', onDown); window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-        canvas.addEventListener('touchstart', onDown, {passive:false});
-        window.addEventListener('touchmove', onMove, {passive:false});
+        canvas.addEventListener('touchstart', e=>{ e.preventDefault(); onDown(e); }, {passive:false});
+        window.addEventListener('touchmove', e=>{ e.preventDefault(); onMove(e); }, {passive:false});
         window.addEventListener('touchend', onUp);
-        
         drawNetwork();
         const tip=document.createElement('div'); tip.className="info-tip";
         tip.innerHTML=state.tournamentType==="double_round"?"🏹 双循环：平行线+箭头，拖拽圆圈添加，单击中点选中后删除":"🔗 单循环：直线连线，拖拽圆圈添加，单击中点选中后删除";
