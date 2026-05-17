@@ -7,7 +7,7 @@
     <style>
         * {
             box-sizing: border-box;
-            user-select: none; /* 避免移动端长按菜单，但保留触控 */
+            user-select: none;
             -webkit-tap-highlight-color: transparent;
         }
         body {
@@ -106,7 +106,6 @@
             border: none;
             font-weight: 600;
             font-size: 0.75rem;
-            touch-action: manipulation;
         }
         .view-btn.active {
             background: white;
@@ -137,7 +136,7 @@
             cursor: grab;
             transition: 0.1s;
             user-select: none;
-            touch-action: none;  /* 提升触屏拖拽灵敏度 */
+            touch-action: none;  /* 完全禁止触摸时滚动 */
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
         .tag:active { cursor: grabbing; background: #eef2ff; }
@@ -224,7 +223,7 @@
             cursor: crosshair;
             width: 100%;
             height: auto;
-            touch-action: none;
+            touch-action: none;  /* 画布内完全禁止滚动 */
         }
         .info-tip {
             font-size: 0.7rem;
@@ -267,7 +266,7 @@
             transform: translate(-50%, -50%);
             white-space: nowrap;
         }
-        /* 手机优化 (保持原始外观的比例) */
+        /* 手机优化 (保持原始比例) */
         @media (max-width: 640px) {
             body { padding: 8px; }
             .main-panel { padding: 0.8rem; }
@@ -280,7 +279,6 @@
             .match-matrix th, .match-matrix td { padding: 4px; }
             .matrix-cell { min-width: 100px; }
         }
-        /* 平板优化 */
         @media (min-width: 641px) and (max-width: 1024px) {
             .main-panel { padding: 1.2rem; }
             .tag { padding: 6px 18px; }
@@ -342,13 +340,22 @@
     let selectedMatchId = null;
     let cellPending = {};
     
-    // 拖拽专用变量 (触屏完美)
+    // 拖拽变量（矩阵视图）
     let dragActive = false;
     let dragTeam = null;
     let dragClone = null;
     let dragMoveHandler = null;
     let dragEndHandler = null;
 
+    // 连线视图拖拽变量
+    let graphDragging = false;
+    let graphDragStartNode = null;
+    let graphDragLastX = 0, graphDragLastY = 0;
+    let graphCanvas = null;
+    let graphCtx = null;
+    let graphAnimationId = null;
+
+    // ---------- 辅助函数 ----------
     function deepCopyState(source) {
         return {
             tournamentType: source.tournamentType,
@@ -463,7 +470,7 @@
         cellPending = {};
     }
 
-    // ---------- 矩阵视图 (外观完全恢复初始，触屏拖拽修复) ----------
+    // ---------- 矩阵视图：彻底修复移动端拖拽 ----------
     function renderDragMatrix() {
         const container = document.getElementById('tableViewContainer');
         if (!container) return;
@@ -569,7 +576,8 @@
                     cleanupDrag();
                     return;
                 }
-                dragActive = false;
+                // 关键修复：先隐藏克隆体，再获取真正的目标元素，避免克隆体遮挡
+                if (dragClone) dragClone.style.display = 'none';
                 const { clientX, clientY } = getClientCoords(endEvent);
                 const elemUnderCursor = document.elementsFromPoint(clientX, clientY);
                 let targetSlot = null;
@@ -579,6 +587,9 @@
                         break;
                     }
                 }
+                // 恢复克隆体显示并立即清除
+                if (dragClone) dragClone.style.display = '';
+                
                 if (targetSlot && dragTeam) {
                     const row = parseInt(targetSlot.getAttribute('data-row'));
                     const col = parseInt(targetSlot.getAttribute('data-col'));
@@ -680,7 +691,7 @@
         });
     }
 
-    // ---------- 连线视图 (移动端拖拽修复) ----------
+    // ---------- 连线视图：彻底修复移动端拖拽连线 ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
@@ -720,10 +731,9 @@
         container.innerHTML = '';
         container.appendChild(canvas);
         const ctx = canvas.getContext('2d');
+        graphCanvas = canvas;
+        graphCtx = ctx;
         
-        let isDragging = false;
-        let dragStartNode = null;
-        let dragCurrentX = 0, dragCurrentY = 0;
         const nodeRadius = Math.max(20, Math.min(28, width / 20));
         const PARALLEL_OFFSET = Math.max(10, Math.min(16, width / 45));
         
@@ -755,6 +765,7 @@
             return lines;
         }
         function drawNetwork() {
+            if (!graphCtx) return;
             ctx.clearRect(0,0,width,height);
             ctx.fillStyle = "#fcfdfd"; ctx.fillRect(0,0,width,height);
             const lines = getParallelLines();
@@ -787,30 +798,24 @@
                 ctx.fillStyle = "#1e293b"; ctx.font = `bold ${Math.max(10, nodeRadius/2)}px "Segoe UI"`;
                 ctx.fillText(node.name, node.x-15, node.y-8);
             });
-            if (isDragging && dragStartNode) {
-                const se = getEdgePoint(dragStartNode.x, dragStartNode.y, dragCurrentX, dragCurrentY, nodeRadius);
-                ctx.beginPath(); ctx.moveTo(se.x, se.y); ctx.lineTo(dragCurrentX, dragCurrentY);
-                ctx.strokeStyle = getNodeColor(dragStartNode.id); ctx.lineWidth = 3; ctx.setLineDash([6,6]); ctx.stroke(); ctx.setLineDash([]);
+            if (graphDragging && graphDragStartNode) {
+                const se = getEdgePoint(graphDragStartNode.x, graphDragStartNode.y, graphDragLastX, graphDragLastY, nodeRadius);
+                ctx.beginPath(); ctx.moveTo(se.x, se.y); ctx.lineTo(graphDragLastX, graphDragLastY);
+                ctx.strokeStyle = getNodeColor(graphDragStartNode.id); ctx.lineWidth = 3; ctx.setLineDash([6,6]); ctx.stroke(); ctx.setLineDash([]);
             }
         }
-        function getCanvasCoords(e) {
+
+        function getCanvasCoordsFromClient(clientX, clientY) {
             const rect = canvas.getBoundingClientRect();
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
-            let clientX, clientY;
-            if (e.touches) {
-                clientX = e.touches[0].clientX;
-                clientY = e.touches[0].clientY;
-            } else {
-                clientX = e.clientX;
-                clientY = e.clientY;
-            }
             let x = (clientX - rect.left) * scaleX;
             let y = (clientY - rect.top) * scaleY;
             x = Math.min(Math.max(x, 10), width - 10);
             y = Math.min(Math.max(y, 10), height - 10);
             return { x, y };
         }
+
         function findNode(x,y) { for(let n of state.networkNodes) if(Math.hypot(n.x-x,n.y-y)<nodeRadius) return n; return null; }
         function findMatchNear(x,y) {
             const lines = getParallelLines();
@@ -825,28 +830,71 @@
             }
             return null;
         }
-        function onDown(e) { e.preventDefault(); const {x,y}=getCanvasCoords(e); const m=findMatchNear(x,y); if(m){ selectedMatchId=m.id; drawNetwork(); return; } if(selectedMatchId){ selectedMatchId=null; drawNetwork(); } const n=findNode(x,y); if(n){ isDragging=true; dragStartNode=n; dragCurrentX=x; dragCurrentY=y; drawNetwork(); } }
-        function onMove(e){ if(!isDragging) return; e.preventDefault(); const {x,y}=getCanvasCoords(e); dragCurrentX=x; dragCurrentY=y; drawNetwork(); }
-        function onUp(e){ 
-            if(!isDragging){ drawNetwork(); return; } 
-            const {x,y}=getCanvasCoords(e); 
-            const endNode=findNode(x,y); 
-            if(dragStartNode && endNode && dragStartNode.id !== endNode.id){ 
-                const res = tryAddMatch(dragStartNode.name, endNode.name); 
-                if(res.success) recordAndPerform(()=>{}); 
-                else alert(res.msg); 
-            } else if(dragStartNode && !endNode){ 
-                alert("请将连线终点拖拽到另一个班级圆圈上"); 
-            } else if(dragStartNode && endNode && dragStartNode.id === endNode.id){ 
-                alert("不能给自己班级连线"); 
-            } 
-            isDragging=false; dragStartNode=null; drawNetwork(); 
+
+        function onPointerDown(e) {
+            e.preventDefault();
+            let clientX, clientY;
+            if (e.touches) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; }
+            else { clientX = e.clientX; clientY = e.clientY; }
+            const { x, y } = getCanvasCoordsFromClient(clientX, clientY);
+            const m = findMatchNear(x, y);
+            if (m) { selectedMatchId = m.id; drawNetwork(); return; }
+            if (selectedMatchId) { selectedMatchId = null; drawNetwork(); }
+            const n = findNode(x, y);
+            if (n) {
+                graphDragging = true;
+                graphDragStartNode = n;
+                graphDragLastX = x;
+                graphDragLastY = y;
+                drawNetwork();
+            }
         }
-        canvas.addEventListener('mousedown', onDown); window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-        canvas.addEventListener('touchstart', onDown, {passive:false}); window.addEventListener('touchmove', onMove, {passive:false}); window.addEventListener('touchend', onUp);
+
+        function onPointerMove(e) {
+            if (!graphDragging) return;
+            e.preventDefault();
+            let clientX, clientY;
+            if (e.touches) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; }
+            else { clientX = e.clientX; clientY = e.clientY; }
+            const { x, y } = getCanvasCoordsFromClient(clientX, clientY);
+            graphDragLastX = x;
+            graphDragLastY = y;
+            drawNetwork();
+        }
+
+        function onPointerUp(e) {
+            if (!graphDragging) {
+                drawNetwork();
+                return;
+            }
+            let clientX, clientY;
+            if (e.changedTouches) { clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY; }
+            else { clientX = e.clientX; clientY = e.clientY; }
+            const { x, y } = getCanvasCoordsFromClient(clientX, clientY);
+            const endNode = findNode(x, y);
+            if (graphDragStartNode && endNode && graphDragStartNode.id !== endNode.id) {
+                const res = tryAddMatch(graphDragStartNode.name, endNode.name);
+                if (res.success) recordAndPerform(() => {});
+                else alert(res.msg);
+            } else if (graphDragStartNode && !endNode) {
+                alert("请将连线终点拖拽到另一个班级圆圈上");
+            } else if (graphDragStartNode && endNode && graphDragStartNode.id === endNode.id) {
+                alert("不能给自己班级连线");
+            }
+            graphDragging = false;
+            graphDragStartNode = null;
+            drawNetwork();
+        }
+
+        canvas.addEventListener('mousedown', onPointerDown);
+        window.addEventListener('mousemove', onPointerMove);
+        window.addEventListener('mouseup', onPointerUp);
+        canvas.addEventListener('touchstart', onPointerDown, { passive: false });
+        window.addEventListener('touchmove', onPointerMove, { passive: false });
+        window.addEventListener('touchend', onPointerUp);
         drawNetwork();
-        const tip=document.createElement('div'); tip.className="info-tip";
-        tip.innerHTML=state.tournamentType==="double_round"?"🏹 双循环：平行线+箭头，拖拽圆圈添加，单击中点选中后删除":"🔗 单循环：直线连线，拖拽圆圈添加，单击中点选中后删除";
+        const tip = document.createElement('div'); tip.className = "info-tip";
+        tip.innerHTML = state.tournamentType === "double_round" ? "🏹 双循环：平行线+箭头，拖拽圆圈添加，单击中点选中后删除" : "🔗 单循环：直线连线，拖拽圆圈添加，单击中点选中后删除";
         container.appendChild(tip);
     }
 
