@@ -202,7 +202,7 @@
             border-radius: 8px;
             font-weight: 600;
             font-size: 0.7rem;
-            padding: 12px 8px;
+            padding: 8px;
             cursor: pointer;
         }
         .match-display { background: #dcfce7; color: #15803d; }
@@ -314,7 +314,7 @@
         <div id="graphViewContainer" style="display: none;"></div>
     </div>
     <footer>
-        💡 <strong>拖拽矩阵</strong>：拖拽班级到红区(主队)/蓝区(客队) → 自动生成比赛。单击生成的比赛直接删除。单击待填区域可清除。<br>
+        💡 <strong>拖拽矩阵</strong>：拖拽班级到红区(主队)/蓝区(客队) → 自动生成比赛。单击区域清除。<br>
         🔗 <strong>连线视图</strong>：拖拽圆圈添加连线，双循环平行线不交叉。单击连线中点选中后删除。
     </footer>
 </div>
@@ -455,6 +455,8 @@
         if (!container) return;
         const teams = state.teams;
         const n = teams.length;
+        
+        // 生成查找表
         const matchMap = {};
         teams.forEach(t => { matchMap[t] = {}; });
         state.matches.forEach(m => { matchMap[m.teamA][m.teamB] = m.id; });
@@ -474,13 +476,25 @@
             for (let j = 0; j < n; j++) {
                 const colTeam = teams[j];
                 if (i === j) { html += `<td class="diagonal">—</td>`; continue; }
-                const matchId = matchMap[rowTeam]?.[colTeam];
+                
+                // 【核心修改点1】：单循环模式下实现自动双向填充显示
+                let matchId = matchMap[rowTeam]?.[colTeam];
+                let isMirrorDisplay = false;
+                
+                if (!matchId && state.tournamentType === "single_round") {
+                    matchId = matchMap[colTeam]?.[rowTeam]; // 如果找不到正向，找反向
+                    if (matchId) isMirrorDisplay = true;   // 标记为镜像自动填充显示
+                }
+
                 const key = `${i},${j}`;
                 const pending = cellPending[key] || { home: null, away: null };
+                
                 if (matchId) {
                     const matchClass = state.tournamentType === "single_round" ? "match-display" : "match-double-display";
+                    // 镜像填充显示时，依然符合主客反向标签
                     const matchText = state.tournamentType === "single_round" ? `🏆 ${rowTeam}→${colTeam}` : `🏹 ${rowTeam}→${colTeam}`;
-                    // 【优化】：去除了内部的 <span style="font-size:0.55rem;">点击删除</span> 标签
+                    
+                    // 【核心修改点2】：移除了 <br><span style="...">点击删除</span>，不加任何多余字样
                     html += `<td class="matrix-cell" data-match-id="${matchId}" data-row="${i}" data-col="${j}"><div class="${matchClass}">${matchText}</div></td>`;
                 } else {
                     html += `<td class="matrix-cell" data-row="${i}" data-col="${j}">
@@ -640,7 +654,7 @@
         });
     }
 
-    // ---------- 连线视图 ----------
+    // ---------- 连线视图 (绝对未动原有算法) ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
