@@ -136,7 +136,7 @@
             cursor: grab;
             transition: 0.1s;
             user-select: none;
-            touch-action: none;  /* 禁止触摸时滚动，提升拖拽灵敏度 */
+            touch-action: none;
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
         .tag:active { cursor: grabbing; background: #eef2ff; }
@@ -339,16 +339,17 @@
     let selectedMatchId = null;
     let cellPending = {};
     
-    // 矩阵拖拽专用变量
+    // 矩阵拖拽变量
     let dragActive = false;
     let dragTeam = null;
     let dragClone = null;
     let dragMoveHandler = null;
     let dragEndHandler = null;
 
-    // 连线拖拽专用变量
+    // 连线拖拽变量
     let graphDragging = false;
     let graphDragStartNode = null;
+    let graphDragCurrentTargetNode = null;  // 实时跟踪当前鼠标/手指下的目标节点
     let graphDragLastX = 0, graphDragLastY = 0;
     let graphCanvas = null;
     let graphCtx = null;
@@ -574,10 +575,8 @@
                     cleanupDrag();
                     return;
                 }
-                // 关键修复：先隐藏克隆体，避免影响 elementsFromPoint
                 if (dragClone) dragClone.style.display = 'none';
                 const { clientX, clientY } = getClientCoords(endEvent);
-                // 延迟一小段时间，让 DOM 更新
                 setTimeout(() => {
                     const elemUnderCursor = document.elementsFromPoint(clientX, clientY);
                     let targetSlot = null;
@@ -689,7 +688,7 @@
         });
     }
 
-    // ---------- 连线视图：移动端拖拽终极修复 ----------
+    // ---------- 连线视图：彻底修复拖拽终点检测（电脑+手机） ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
@@ -814,7 +813,13 @@
             return { x, y };
         }
 
-        function findNode(x,y) { for(let n of state.networkNodes) if(Math.hypot(n.x-x,n.y-y)<nodeRadius) return n; return null; }
+        function findNode(x, y) {
+            for (let n of state.networkNodes) {
+                if (Math.hypot(n.x - x, n.y - y) < nodeRadius) return n;
+            }
+            return null;
+        }
+
         function findMatchNear(x,y) {
             const lines = getParallelLines();
             for(let {match,offset} of lines){
@@ -842,6 +847,7 @@
             if (n) {
                 graphDragging = true;
                 graphDragStartNode = n;
+                graphDragCurrentTargetNode = null;
                 graphDragLastX = x;
                 graphDragLastY = y;
                 drawNetwork();
@@ -857,6 +863,9 @@
             const { x, y } = getCanvasCoordsFromClient(clientX, clientY);
             graphDragLastX = x;
             graphDragLastY = y;
+            // 实时检测当前所在的节点
+            const currentNode = findNode(x, y);
+            graphDragCurrentTargetNode = (currentNode && currentNode.id !== graphDragStartNode.id) ? currentNode : null;
             drawNetwork();
         }
 
@@ -865,15 +874,28 @@
                 drawNetwork();
                 return;
             }
+            // 获取终点坐标（用于后备检测）
             let clientX, clientY;
-            if (e.changedTouches) { clientX = e.changedTouches[0].clientX; clientY = e.changedTouches[0].clientY; }
-            else { clientX = e.clientX; clientY = e.clientY; }
+            if (e.changedTouches) {
+                clientX = e.changedTouches[0].clientX;
+                clientY = e.changedTouches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
             const { x, y } = getCanvasCoordsFromClient(clientX, clientY);
-            const endNode = findNode(x, y);
+            // 优先使用拖拽过程中记录的实时目标节点，若没有则用松开坐标检测
+            let endNode = graphDragCurrentTargetNode;
+            if (!endNode) {
+                endNode = findNode(x, y);
+            }
             if (graphDragStartNode && endNode && graphDragStartNode.id !== endNode.id) {
                 const res = tryAddMatch(graphDragStartNode.name, endNode.name);
-                if (res.success) recordAndPerform(() => {});
-                else alert(res.msg);
+                if (res.success) {
+                    recordAndPerform(() => {});
+                } else {
+                    alert(res.msg);
+                }
             } else if (graphDragStartNode && !endNode) {
                 alert("请将连线终点拖拽到另一个班级圆圈上");
             } else if (graphDragStartNode && endNode && graphDragStartNode.id === endNode.id) {
@@ -881,6 +903,7 @@
             }
             graphDragging = false;
             graphDragStartNode = null;
+            graphDragCurrentTargetNode = null;
             drawNetwork();
         }
 
