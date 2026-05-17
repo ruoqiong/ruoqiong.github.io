@@ -138,6 +138,15 @@
             touch-action: manipulation;
         }
         .tag:active { cursor: grabbing; }
+        
+        /* 移动端选中样式高亮 */
+        .tag.selected {
+            background: #1e3a8a;
+            color: white;
+            border-color: #1e3a8a;
+            transform: scale(1.05);
+        }
+
         .matrix-dropzone {
             overflow-x: auto;
             border-radius: 1rem;
@@ -314,7 +323,7 @@
         <div id="graphViewContainer" style="display: none;"></div>
     </div>
     <footer>
-        💡 <strong>拖拽矩阵</strong>：拖拽班级到红区(主队)/蓝区(客队) → 自动生成比赛。单击区域清除。<br>
+        💡 <strong>矩阵编排</strong>：PC端拖拽班级到红区/蓝区；移动端可直接【点击班级标签】再【点击红蓝区】。单击已填区域清除。<br>
         🔗 <strong>连线视图</strong>：拖拽圆圈添加连线，双循环平行线不交叉。单击连线中点选中后删除。
     </footer>
 </div>
@@ -327,7 +336,10 @@
         teams: [],
         matches: [],
         networkNodes: [],
-        currentView: "table"
+        currentView: "table",
+        selectedTeam: null,     // 移动端辅助：存储当前点击选中的班级
+        lastCanvasW: null,      // 画布动态比例锁定参数W
+        lastCanvasH: null       // 画布动态比例锁定参数H
     };
 
     let historyStack = [];
@@ -348,7 +360,10 @@
             teams: [...source.teams],
             matches: source.matches.map(m => ({ ...m })),
             networkNodes: source.networkNodes ? source.networkNodes.map(n => ({ ...n })) : [],
-            currentView: source.currentView
+            currentView: source.currentView,
+            selectedTeam: source.selectedTeam,
+            lastCanvasW: source.lastCanvasW,
+            lastCanvasH: source.lastCanvasH
         };
     }
 
@@ -451,11 +466,14 @@
         const w = Math.min(700, window.innerWidth - 60);
         const h = 420;
         state.networkNodes = getCircularLayout(state.teamCount, w, h);
+        state.lastCanvasW = w;
+        state.lastCanvasH = h;
         selectedMatchId = null;
         cellPending = {};
+        state.selectedTeam = null;
     }
 
-    // ---------- 矩阵拖拽视图 (响应式触控优化) ----------
+    // ---------- 矩阵拖拽与点击视图 (响应式触控全面优化) ----------
     function renderDragMatrix() {
         const container = document.getElementById('tableViewContainer');
         if (!container) return;
@@ -467,7 +485,8 @@
 
         let html = `<div class="drag-tags" id="dragTagsZone">`;
         teams.forEach(team => {
-            html += `<div class="tag" data-team="${team}">${team}</div>`;
+            const isSelected = state.selectedTeam === team;
+            html += `<div class="tag ${isSelected ? 'selected' : ''}" data-team="${team}">${team}</div>`;
         });
         html += `</div>`;
         html += `<div class="matrix-dropzone"><table class="match-matrix" id="dropMatrix">`;
@@ -507,7 +526,7 @@
         html += `</tbody></table></div>`;
         container.innerHTML = html;
 
-        // 拖拽逻辑 (同时支持鼠标和触屏)
+        // 拖拽与点击逻辑
         const tags = document.querySelectorAll('.tag');
         const homeSlots = document.querySelectorAll('.home-slot');
         const awaySlots = document.querySelectorAll('.away-slot');
@@ -515,10 +534,9 @@
 
         function getClientCoords(e) {
             let clientX, clientY;
-            if (e.touches) {
+            if (e.touches && e.touches.length > 0) {
                 clientX = e.touches[0].clientX;
                 clientY = e.touches[0].clientY;
-                e.preventDefault();
             } else {
                 clientX = e.clientX;
                 clientY = e.clientY;
@@ -529,7 +547,8 @@
         function onDragStart(e) {
             const target = e.target.closest('.tag');
             if (!target) return;
-            e.preventDefault();
+            
+            // 如果是普通的轻触点击，不中断它的 click 事件
             dragTeam = target.getAttribute('data-team');
             if (!dragTeam) return;
             dragActive = true;
@@ -548,6 +567,7 @@
 
         function onDragMove(e) {
             if (!dragActive || !dragClone) return;
+            if (e.cancelable) e.preventDefault();
             const { clientX, clientY } = getClientCoords(e);
             dragClone.style.left = clientX + 'px';
             dragClone.style.top = clientY + 'px';
@@ -580,26 +600,7 @@
                 const row = parseInt(targetSlot.getAttribute('data-row'));
                 const col = parseInt(targetSlot.getAttribute('data-col'));
                 const slotType = targetSlot.getAttribute('data-slot-type');
-                const key = `${row},${col}`;
-                if (!cellPending[key]) cellPending[key] = { home: null, away: null };
-                const pending = cellPending[key];
-                if (slotType === 'home') pending.home = dragTeam;
-                else pending.away = dragTeam;
-                if (pending.home && pending.away) {
-                    const homeTeam = pending.home;
-                    const awayTeam = pending.away;
-                    if (homeTeam === awayTeam) {
-                        alert("主队和客队不能相同");
-                        delete cellPending[key];
-                    } else if (!isMatchValid(homeTeam, awayTeam, state.tournamentType, state.matches)) {
-                        alert(state.tournamentType === "single_round" ? "单循环中每对班级只能有一场比赛" : "双循环中相同方向已存在");
-                        delete cellPending[key];
-                    } else {
-                        recordAndPerform(() => { tryAddMatch(homeTeam, awayTeam); });
-                        delete cellPending[key];
-                    }
-                }
-                renderDragMatrix();
+                executeSlotAssignment(row, col, slotType, dragTeam);
             }
             cleanupDrag();
         }
@@ -615,11 +616,44 @@
             dragTeam = null;
         }
 
+        function executeSlotAssignment(row, col, slotType, teamName) {
+            const key = `${row},${col}`;
+            if (!cellPending[key]) cellPending[key] = { home: null, away: null };
+            const pending = cellPending[key];
+            if (slotType === 'home') pending.home = teamName;
+            else pending.away = teamName;
+            
+            if (pending.home && pending.away) {
+                const homeTeam = pending.home;
+                const awayTeam = pending.away;
+                if (homeTeam === awayTeam) {
+                    alert("主队和客队不能相同");
+                    delete cellPending[key];
+                } else if (!isMatchValid(homeTeam, awayTeam, state.tournamentType, state.matches)) {
+                    alert(state.tournamentType === "single_round" ? "单循环中每对班级只能有一场比赛" : "双循环中相同方向已存在");
+                    delete cellPending[key];
+                } else {
+                    recordAndPerform(() => { tryAddMatch(homeTeam, awayTeam); });
+                    delete cellPending[key];
+                }
+            }
+            renderDragMatrix();
+        }
+
         tags.forEach(tag => {
-            tag.removeEventListener('mousedown', onDragStart);
-            tag.removeEventListener('touchstart', onDragStart);
             tag.addEventListener('mousedown', onDragStart);
-            tag.addEventListener('touchstart', onDragStart, { passive: false });
+            tag.addEventListener('touchstart', onDragStart, { passive: true });
+            
+            // 移动端免拖拽：点击选择切换机制
+            tag.addEventListener('click', (e) => {
+                const clickedTeam = tag.getAttribute('data-team');
+                if (state.selectedTeam === clickedTeam) {
+                    state.selectedTeam = null; // 再次点击取消选中
+                } else {
+                    state.selectedTeam = clickedTeam;
+                }
+                renderDragMatrix();
+            });
         });
 
         function handleSlotClick(e) {
@@ -628,18 +662,27 @@
             const col = parseInt(slot.getAttribute('data-col'));
             const slotType = slot.getAttribute('data-slot-type');
             const key = `${row},${col}`;
-            if (cellPending[key]) {
-                if (slotType === 'home') cellPending[key].home = null;
-                else cellPending[key].away = null;
-                if (!cellPending[key].home && !cellPending[key].away) delete cellPending[key];
+
+            if (state.selectedTeam) {
+                // 如果当前选定了班级，则执行免拖拽点击填入
+                executeSlotAssignment(row, col, slotType, state.selectedTeam);
+                state.selectedTeam = null; // 消费掉选中的队伍
                 renderDragMatrix();
+            } else {
+                // 原有逻辑：未选定队伍时点击清空对应的小格子
+                if (cellPending[key]) {
+                    if (slotType === 'home') cellPending[key].home = null;
+                    else cellPending[key].away = null;
+                    if (!cellPending[key].home && !cellPending[key].away) delete cellPending[key];
+                    renderDragMatrix();
+                }
             }
         }
-        homeSlots.forEach(slot => { slot.removeEventListener('click', handleSlotClick); slot.addEventListener('click', handleSlotClick); });
-        awaySlots.forEach(slot => { slot.removeEventListener('click', handleSlotClick); slot.addEventListener('click', handleSlotClick); });
+        
+        homeSlots.forEach(slot => { slot.addEventListener('click', handleSlotClick); });
+        awaySlots.forEach(slot => { slot.addEventListener('click', handleSlotClick); });
 
         matchCells.forEach(cell => {
-            cell.removeEventListener('click', (e) => {});
             cell.addEventListener('click', (e) => {
                 const matchId = cell.getAttribute('data-match-id');
                 if (matchId) recordAndPerform(() => tryDeleteMatch(parseInt(matchId)));
@@ -647,7 +690,7 @@
         });
     }
 
-    // ---------- 连线视图 (平行线，响应式画布尺寸) ----------
+    // ---------- 连线视图 (平行线，响应式防崩触控画布) ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
@@ -669,16 +712,19 @@
         const containerWidth = Math.min(container.clientWidth - 20, 750);
         const width = Math.max(400, containerWidth);
         const height = Math.min(480, Math.max(300, width * 0.6));
-        if (!state.networkNodes.length || state.networkNodes.length !== state.teamCount) {
+        
+        if (!state.networkNodes.length || state.networkNodes.length !== state.teamCount || !state.lastCanvasW) {
             state.networkNodes = getCircularLayout(state.teamCount, width, height);
         } else {
-            // 重新缩放节点坐标 (如果尺寸变化)
-            const oldW = 750, oldH = 480;
+            // 完美修复：根据上一次画布的实际大小自适应按比例缩放，不再写死 750/480
             state.networkNodes.forEach(n => {
-                n.x = (n.x / oldW) * width;
-                n.y = (n.y / oldH) * height;
+                n.x = (n.x / state.lastCanvasW) * width;
+                n.y = (n.y / state.lastCanvasH) * height;
             });
         }
+        state.lastCanvasW = width;
+        state.lastCanvasH = height;
+
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
@@ -766,8 +812,16 @@
             const scaleX = canvas.width / rect.width;
             const scaleY = canvas.height / rect.height;
             let clientX, clientY;
-            if (e.touches) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; e.preventDefault(); }
-            else { clientX = e.clientX; clientY = e.clientY; }
+            
+            // 完美修复：全面兼容手机端的 touches (连线中) 与 changedTouches (连线结束松开瞬间)
+            let touch = (e.touches && e.touches.length > 0) ? e.touches[0] : ((e.changedTouches && e.changedTouches.length > 0) ? e.changedTouches[0] : null);
+            if (touch) { 
+                clientX = touch.clientX; 
+                clientY = touch.clientY; 
+            } else { 
+                clientX = e.clientX; 
+                clientY = e.clientY; 
+            }
             let x = (clientX - rect.left) * scaleX, y = (clientY - rect.top) * scaleY;
             return { x: Math.min(Math.max(x, 10), width-10), y: Math.min(Math.max(y, 10), height-10) };
         }
@@ -788,10 +842,10 @@
         function onDown(e) {
             const {x,y}=getMousePos(e);
             const m=findMatchNear(x,y);
-            if(m){ selectedMatchId=m.id; drawNetwork(); e.preventDefault(); return; }
+            if(m){ selectedMatchId=m.id; drawNetwork(); if(e.cancelable) e.preventDefault(); return; }
             if(selectedMatchId){ selectedMatchId=null; drawNetwork(); }
             const n=findNode(x,y);
-            if(n){ isDragging=true; dragStartNode=n; dragCurrentX=x; dragCurrentY=y; drawNetwork(); e.preventDefault(); }
+            if(n){ isDragging=true; dragStartNode=n; dragCurrentX=x; dragCurrentY=y; drawNetwork(); if(e.cancelable) e.preventDefault(); }
         }
         function onMove(e){ if(!isDragging) return; const {x,y}=getMousePos(e); dragCurrentX=x; dragCurrentY=y; drawNetwork(); }
         function onUp(e){
@@ -807,8 +861,8 @@
             isDragging=false; dragStartNode=null; drawNetwork();
         }
         canvas.addEventListener('mousedown', onDown); window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
-        canvas.addEventListener('touchstart', e=>{ e.preventDefault(); onDown(e); }, {passive:false});
-        window.addEventListener('touchmove', e=>{ e.preventDefault(); onMove(e); }, {passive:false});
+        canvas.addEventListener('touchstart', e=>{ if(e.cancelable) e.preventDefault(); onDown(e); }, {passive:false});
+        window.addEventListener('touchmove', e=>{ if(isDragging && e.cancelable) e.preventDefault(); onMove(e); }, {passive:false});
         window.addEventListener('touchend', onUp);
         drawNetwork();
         const tip=document.createElement('div'); tip.className="info-tip";
@@ -820,8 +874,8 @@
         if (selectedMatchId !== null) { recordAndPerform(() => { tryDeleteMatch(selectedMatchId); selectedMatchId = null; }); }
         else alert("请先在连线视图中单击连线中点选中一条连线");
     }
-    function clearScreen() { recordAndPerform(() => { state.matches = []; selectedMatchId = null; cellPending = {}; }); }
-    function resetAndGenerate() { recordAndPerform(() => { state.teamCount = parseInt(document.getElementById('teamCount').value); state.tournamentType = document.getElementById('tournamentType').value; initSchedule(); selectedMatchId = null; cellPending = {}; }); }
+    function clearScreen() { recordAndPerform(() => { state.matches = []; selectedMatchId = null; cellPending = {}; state.selectedTeam = null; }); }
+    function resetAndGenerate() { recordAndPerform(() => { state.teamCount = parseInt(document.getElementById('teamCount').value); state.tournamentType = document.getElementById('tournamentType').value; initSchedule(); selectedMatchId = null; cellPending = {}; state.selectedTeam = null; }); }
     function bindEvents() {
         document.getElementById('generateBtn').addEventListener('click', resetAndGenerate);
         document.getElementById('undoBtn').addEventListener('click', undo);
@@ -829,6 +883,7 @@
         document.getElementById('deleteSelectedBtn').addEventListener('click', deleteSelectedMatch);
         document.getElementById('tableViewBtn').addEventListener('click', () => {
             state.currentView = "table";
+            state.selectedTeam = null;
             document.getElementById('tableViewBtn').classList.add('active');
             document.getElementById('graphViewBtn').classList.remove('active');
             document.getElementById('tableViewContainer').style.display = 'block';
@@ -837,6 +892,7 @@
         });
         document.getElementById('graphViewBtn').addEventListener('click', () => {
             state.currentView = "graph";
+            state.selectedTeam = null;
             document.getElementById('graphViewBtn').classList.add('active');
             document.getElementById('tableViewBtn').classList.remove('active');
             document.getElementById('tableViewContainer').style.display = 'none';
