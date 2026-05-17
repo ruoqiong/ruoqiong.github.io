@@ -136,7 +136,7 @@
             cursor: grab;
             transition: 0.1s;
             user-select: none;
-            touch-action: none;  /* 完全禁止触摸时滚动 */
+            touch-action: none;  /* 禁止触摸时滚动，提升拖拽灵敏度 */
             box-shadow: 0 1px 2px rgba(0,0,0,0.05);
         }
         .tag:active { cursor: grabbing; background: #eef2ff; }
@@ -223,7 +223,7 @@
             cursor: crosshair;
             width: 100%;
             height: auto;
-            touch-action: none;  /* 画布内完全禁止滚动 */
+            touch-action: none;
         }
         .info-tip {
             font-size: 0.7rem;
@@ -266,7 +266,6 @@
             transform: translate(-50%, -50%);
             white-space: nowrap;
         }
-        /* 手机优化 (保持原始比例) */
         @media (max-width: 640px) {
             body { padding: 8px; }
             .main-panel { padding: 0.8rem; }
@@ -340,20 +339,19 @@
     let selectedMatchId = null;
     let cellPending = {};
     
-    // 拖拽变量（矩阵视图）
+    // 矩阵拖拽专用变量
     let dragActive = false;
     let dragTeam = null;
     let dragClone = null;
     let dragMoveHandler = null;
     let dragEndHandler = null;
 
-    // 连线视图拖拽变量
+    // 连线拖拽专用变量
     let graphDragging = false;
     let graphDragStartNode = null;
     let graphDragLastX = 0, graphDragLastY = 0;
     let graphCanvas = null;
     let graphCtx = null;
-    let graphAnimationId = null;
 
     // ---------- 辅助函数 ----------
     function deepCopyState(source) {
@@ -470,7 +468,7 @@
         cellPending = {};
     }
 
-    // ---------- 矩阵视图：彻底修复移动端拖拽 ----------
+    // ---------- 矩阵视图：移动端拖拽终极修复 ----------
     function renderDragMatrix() {
         const container = document.getElementById('tableViewContainer');
         if (!container) return;
@@ -576,46 +574,46 @@
                     cleanupDrag();
                     return;
                 }
-                // 关键修复：先隐藏克隆体，再获取真正的目标元素，避免克隆体遮挡
+                // 关键修复：先隐藏克隆体，避免影响 elementsFromPoint
                 if (dragClone) dragClone.style.display = 'none';
                 const { clientX, clientY } = getClientCoords(endEvent);
-                const elemUnderCursor = document.elementsFromPoint(clientX, clientY);
-                let targetSlot = null;
-                for (let el of elemUnderCursor) {
-                    if (el.classList && (el.classList.contains('home-slot') || el.classList.contains('away-slot'))) {
-                        targetSlot = el;
-                        break;
-                    }
-                }
-                // 恢复克隆体显示并立即清除
-                if (dragClone) dragClone.style.display = '';
-                
-                if (targetSlot && dragTeam) {
-                    const row = parseInt(targetSlot.getAttribute('data-row'));
-                    const col = parseInt(targetSlot.getAttribute('data-col'));
-                    const slotType = targetSlot.getAttribute('data-slot-type');
-                    const key = `${row},${col}`;
-                    if (!cellPending[key]) cellPending[key] = { home: null, away: null };
-                    const pending = cellPending[key];
-                    if (slotType === 'home') pending.home = dragTeam;
-                    else pending.away = dragTeam;
-                    if (pending.home && pending.away) {
-                        const homeTeam = pending.home;
-                        const awayTeam = pending.away;
-                        if (homeTeam === awayTeam) {
-                            alert("主队和客队不能相同");
-                            delete cellPending[key];
-                        } else if (!isMatchValid(homeTeam, awayTeam, state.tournamentType, state.matches)) {
-                            alert(state.tournamentType === "single_round" ? "单循环中每对班级只能有一场比赛" : "双循环中相同方向已存在");
-                            delete cellPending[key];
-                        } else {
-                            recordAndPerform(() => { tryAddMatch(homeTeam, awayTeam); });
-                            delete cellPending[key];
+                // 延迟一小段时间，让 DOM 更新
+                setTimeout(() => {
+                    const elemUnderCursor = document.elementsFromPoint(clientX, clientY);
+                    let targetSlot = null;
+                    for (let el of elemUnderCursor) {
+                        if (el.classList && (el.classList.contains('home-slot') || el.classList.contains('away-slot'))) {
+                            targetSlot = el;
+                            break;
                         }
                     }
-                    renderDragMatrix();
-                }
-                cleanupDrag();
+                    if (targetSlot && dragTeam) {
+                        const row = parseInt(targetSlot.getAttribute('data-row'));
+                        const col = parseInt(targetSlot.getAttribute('data-col'));
+                        const slotType = targetSlot.getAttribute('data-slot-type');
+                        const key = `${row},${col}`;
+                        if (!cellPending[key]) cellPending[key] = { home: null, away: null };
+                        const pending = cellPending[key];
+                        if (slotType === 'home') pending.home = dragTeam;
+                        else pending.away = dragTeam;
+                        if (pending.home && pending.away) {
+                            const homeTeam = pending.home;
+                            const awayTeam = pending.away;
+                            if (homeTeam === awayTeam) {
+                                alert("主队和客队不能相同");
+                                delete cellPending[key];
+                            } else if (!isMatchValid(homeTeam, awayTeam, state.tournamentType, state.matches)) {
+                                alert(state.tournamentType === "single_round" ? "单循环中每对班级只能有一场比赛" : "双循环中相同方向已存在");
+                                delete cellPending[key];
+                            } else {
+                                recordAndPerform(() => { tryAddMatch(homeTeam, awayTeam); });
+                                delete cellPending[key];
+                            }
+                        }
+                        renderDragMatrix();
+                    }
+                    cleanupDrag();
+                }, 10);
             }
 
             dragMoveHandler = onDragMove;
@@ -691,7 +689,7 @@
         });
     }
 
-    // ---------- 连线视图：彻底修复移动端拖拽连线 ----------
+    // ---------- 连线视图：移动端拖拽终极修复 ----------
     function getEdgePoint(cx, cy, tx, ty, r) {
         const dx = tx - cx, dy = ty - cy;
         const dist = Math.hypot(dx, dy);
